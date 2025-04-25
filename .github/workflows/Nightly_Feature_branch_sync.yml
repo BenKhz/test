@@ -1,0 +1,59 @@
+name: Nightly Rebase
+
+on:
+  schedule:
+    - cron: "0 0 * * *" # Run every night at midnight
+  workflow_dispatch: # Allow manual triggering
+
+permissions:
+  contents: write # Allows write access to repository contents
+  pull-requests: write # Allows write access to pull requests (if applicable)
+
+jobs:
+  rebase:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the repository
+        uses: actions/checkout@v3
+
+      - name: Set up Git
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "github-actions@github.com"
+
+      - name: Fetch latest dev branch
+        run: |
+          git fetch origin
+          git checkout dev
+          git pull origin dev  # Ensure we have the latest dev changes
+
+      - name: Rebase dev onto feature branches
+        run: |
+          # Get list of all feature branches
+          for branch in $(git branch -r | grep 'origin/feature/'); do
+            git checkout "$branch"
+            git rebase origin/dev
+            if [ $? -ne 0 ]; then
+              # Capture conflict details
+              echo "Rebase conflict detected in $branch, please resolve conflicts manually." >> rebase_failures.txt
+              # Log the conflicting files
+              git diff --name-only --diff-filter=U >> rebase_failures.txt
+            else
+              echo "Successfully rebased $branch onto dev"
+            fi
+          done
+
+      - name: Push rebased feature branches
+        run: |
+          # Push all successfully rebased branches (with --force-with-lease to avoid overwriting)
+          git push --force-with-lease
+
+      - name: Notify if any rebase conflicts occurred
+        run: |
+          if [ -s rebase_failures.txt ]; then
+            echo "Rebase conflicts occurred in the following branches:"
+            cat rebase_failures.txt
+            # Send notification (e.g., Slack, email) or log the failures
+          else
+            echo "All feature branches successfully rebased onto dev."
+          fi
