@@ -11,32 +11,19 @@ on:
 jobs:
   rebase:
     runs-on: ubuntu-latest
-
     permissions:
       contents: write
 
     steps:
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      # Step 1: Check out the repository code and all branches
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # Fetch all history and all branches, not just the latest commit
-
-      # Step 2: Set up Git user info for making commits and rebases
-      - name: Set up Git user
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-
       - name: Ensure latest GitHub CLI
         run: |
           sudo apt-get update
           sudo apt-get install -y gh
-
 
       - name: Authenticate GitHub CLI
         run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
