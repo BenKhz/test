@@ -1,4 +1,4 @@
-name: Nightly Merge
+name: Nightly Rebase
 
 on:
   schedule:
@@ -10,7 +10,7 @@ permissions:
   pull-requests: write # Allows write access to pull requests (if applicable)
 
 jobs:
-  merge:
+  rebase:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout the repository
@@ -25,34 +25,35 @@ jobs:
         run: |
           git fetch origin
           git checkout dev
+          git pull origin dev  # Ensure we have the latest dev changes
 
-      - name: Merge dev into feature branches
+      - name: Rebase dev onto feature branches
         run: |
           # Get list of all feature branches
           for branch in $(git branch -r | grep 'origin/feature/'); do
             git checkout "$branch"
-            git merge origin/dev
+            git rebase origin/dev
             if [ $? -ne 0 ]; then
               # Capture conflict details
-              echo "Merge conflict detected in $branch, please resolve conflicts manually." >> merge_failures.txt
+              echo "Rebase conflict detected in $branch, please resolve conflicts manually." >> rebase_failures.txt
               # Log the conflicting files
-              git diff --name-only --diff-filter=U >> merge_failures.txt
+              git diff --name-only --diff-filter=U >> rebase_failures.txt
             else
-              echo "Successfully merged dev into $branch"
+              echo "Successfully rebased $branch onto dev"
             fi
           done
 
-      - name: Push merged feature branches
+      - name: Push rebased feature branches
         run: |
-          # Push all successfully merged branches
-          git push
+          # Push all successfully rebased branches (with --force-with-lease to avoid overwriting)
+          git push --force-with-lease
 
-      - name: Notify if any merge conflicts occurred
+      - name: Notify if any rebase conflicts occurred
         run: |
-          if [ -s merge_failures.txt ]; then
-            echo "Merge conflicts occurred in the following branches:"
-            cat merge_failures.txt
+          if [ -s rebase_failures.txt ]; then
+            echo "Rebase conflicts occurred in the following branches:"
+            cat rebase_failures.txt
             # Send notification (e.g., Slack, email) or log the failures
           else
-            echo "All feature branches successfully merged with dev."
+            echo "All feature branches successfully rebased onto dev."
           fi
