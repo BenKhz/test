@@ -1,59 +1,75 @@
-name: Nightly Rebase
+name: Rebase Dev onto Feature Branches
 
+# This workflow is triggered in two ways:
+# 1. On a schedule: every day at 2am Pacific Time (which is 9am UTC)
+# 2. Manually, via the GitHub Actions UI (workflow_dispatch)
 on:
   schedule:
-    - cron: "0 0 * * *" # Run every night at midnight
-  workflow_dispatch: # Allow manual triggering
-
-permissions:
-  contents: write # Allows write access to repository contents
-  pull-requests: write # Allows write access to pull requests (if applicable)
+    # Cron syntax: minute hour day-of-month month day-of-week
+    # 0 9 * * * means 9:00 UTC every day (2am PT)
+    - cron: "0 9 * * *"
+  workflow_dispatch:
 
 jobs:
   rebase:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest # Use the latest Ubuntu runner provided by GitHub
+    permissions:
+      contents: write
+
     steps:
-      - name: Checkout the repository
-        uses: actions/checkout@v3
+      # Step 1: Check out the repository code and all branches
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all history and all branches, not just the latest commit
 
-      - name: Set up Git
+      # Step 2: Set up Git user info for making commits and rebases
+      - name: Set up Git user
         run: |
-          git config user.name "GitHub Actions"
-          git config user.email "github-actions@github.com"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Fetch latest dev branch
+      # Step 3: Install the GitHub CLI (gh), which we'll use to interact with GitHub if needed
+      - name: Ensure latest GitHub CLI
         run: |
-          git fetch origin
-          git checkout dev
-          git pull origin dev  # Ensure we have the latest dev changes
+          sudo apt-get update
+          sudo apt-get install -y gh
 
-      - name: Rebase dev onto feature branches
+      # Step 4: Authenticate the GitHub CLI using the GITHUB_TOKEN secret
+      - name: Authenticate GitHub CLI
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+
+      # Step 5: Fetch all remote branches so we can see and operate on them
+      - name: Fetch all branches
+        run: git fetch --all
+
+      # Step 6: List all remote branches that match the pattern "feature/*"
+      # This step outputs a comma-separated list of branch names to be used in the next step
+      - name: List all open feature branches
+        id: list_branches
         run: |
-          # Get list of all feature branches
-          for branch in $(git branch -r | grep 'origin/feature/'); do
-            git checkout "$branch"
-            git rebase origin/dev
-            if [ $? -ne 0 ]; then
-              # Capture conflict details
-              echo "Rebase conflict detected in $branch, please resolve conflicts manually." >> rebase_failures.txt
-              # Log the conflicting files
-              git diff --name-only --diff-filter=U >> rebase_failures.txt
-            else
-              echo "Successfully rebased $branch onto dev"
-            fi
+          # List all remote branches, filter for those starting with "origin/feature/"
+          git branch -r | grep 'origin/feature/' | sed 's|origin/||' > feature_branches.txt
+          # Convert the list to a comma-separated string for GitHub Actions output
+          echo "branches=$(cat feature_branches.txt | tr '\n' ',' | sed 's/,$//')" >> $GITHUB_OUTPUT
+
+      # Step 7: For each feature branch, rebase the latest dev onto it and push the result
+      - name: Rebase dev onto each feature branch
+        env:
+          BRANCHES: ${{ steps.list_branches.outputs.branches }}
+        run: |
+          # Split the comma-separated list into an array
+          IFS=',' read -ra BRANCH_ARRAY <<< "$BRANCHES"
+          # Loop through each feature branch
+          for branch in "${BRANCH_ARRAY[@]}"; do
+            echo "Rebasing dev onto $branch"
+            git checkout $branch                # Switch to the feature branch
+            git rebase origin/dev               # Rebase the latest dev onto it
+            git push origin $branch --force-with-lease  # Force-push the rebased branch back to remote
           done
 
-      - name: Push rebased feature branches
-        run: |
-          # Push all successfully rebased branches (with --force-with-lease to avoid overwriting)
-          git push --force-with-lease
-
-      - name: Notify if any rebase conflicts occurred
-        run: |
-          if [ -s rebase_failures.txt ]; then
-            echo "Rebase conflicts occurred in the following branches:"
-            cat rebase_failures.txt
-            # Send notification (e.g., Slack, email) or log the failures
-          else
-            echo "All feature branches successfully rebased onto dev."
-          fi
+# Notes:
+# - This workflow will rewrite history on feature branches by force-pushing after a rebase.
+# - Make sure your team is aware of this, as it can affect local clones of those branches.
+# - The workflow uses the default GITHUB_TOKEN, which has permissions to push to the repository.
+# - The workflow can be triggered manually or will run automatically every night at 2am PT.
