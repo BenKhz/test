@@ -1,75 +1,89 @@
 name: Rebase Dev onto Feature Branches
 
-# This workflow is triggered in two ways:
-# 1. On a schedule: every day at 2am Pacific Time (which is 9am UTC)
-# 2. Manually, via the GitHub Actions UI (workflow_dispatch)
 on:
   schedule:
-    # Cron syntax: minute hour day-of-month month day-of-week
-    # 0 9 * * * means 9:00 UTC every day (2am PT)
     - cron: "0 9 * * *"
   workflow_dispatch:
 
 jobs:
   rebase:
-    runs-on: ubuntu-latest # Use the latest Ubuntu runner provided by GitHub
+    runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
-      # Step 1: Check out the repository code and all branches
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Fetch all history and all branches, not just the latest commit
+          fetch-depth: 0
 
-      # Step 2: Set up Git user info for making commits and rebases
       - name: Set up Git user
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-      # Step 3: Install the GitHub CLI (gh), which we'll use to interact with GitHub if needed
       - name: Ensure latest GitHub CLI
         run: |
           sudo apt-get update
           sudo apt-get install -y gh
 
-      # Step 4: Authenticate the GitHub CLI using the GITHUB_TOKEN secret
       - name: Authenticate GitHub CLI
         run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
 
-      # Step 5: Fetch all remote branches so we can see and operate on them
       - name: Fetch all branches
         run: git fetch --all
 
-      # Step 6: List all remote branches that match the pattern "feature/*"
-      # This step outputs a comma-separated list of branch names to be used in the next step
       - name: List all open feature branches
         id: list_branches
         run: |
-          # List all remote branches, filter for those starting with "origin/feature/"
           git branch -r | grep 'origin/feature/' | sed 's|origin/||' > feature_branches.txt
-          # Convert the list to a comma-separated string for GitHub Actions output
           echo "branches=$(cat feature_branches.txt | tr '\n' ',' | sed 's/,$//')" >> $GITHUB_OUTPUT
 
-      # Step 7: For each feature branch, rebase the latest dev onto it and push the result
       - name: Rebase dev onto each feature branch
         env:
           BRANCHES: ${{ steps.list_branches.outputs.branches }}
         run: |
-          # Split the comma-separated list into an array
+          > rebase_failures.txt
           IFS=',' read -ra BRANCH_ARRAY <<< "$BRANCHES"
-          # Loop through each feature branch
           for branch in "${BRANCH_ARRAY[@]}"; do
-            echo "Rebasing dev onto $branch"
-            git checkout $branch                # Switch to the feature branch
-            git rebase origin/dev               # Rebase the latest dev onto it
-            git push origin $branch --force-with-lease  # Force-push the rebased branch back to remote
+            echo "Processing $branch..."
+            git checkout $branch
+            if git rebase origin/dev; then
+              git push origin $branch --force-with-lease
+              echo "✅ Successfully rebased and pushed $branch"
+            else
+              echo "❌ Conflict detected in $branch"
+              author_info=$(git log -1 --pretty=format:'%an <%ae>')
+              echo "- Branch: $branch | Author: $author_info" >> rebase_failures.txt
+              git rebase --abort
+            fi
           done
 
-# Notes:
-# - This workflow will rewrite history on feature branches by force-pushing after a rebase.
-# - Make sure your team is aware of this, as it can affect local clones of those branches.
-# - The workflow uses the default GITHUB_TOKEN, which has permissions to push to the repository.
-# - The workflow can be triggered manually or will run automatically every night at 2am PT.
+      - name: Report rebase conflicts
+        if: always()
+        run: |
+          if [ -s rebase_failures.txt ]; then
+            echo "### 🚨 Rebase conflicts detected!" >> $GITHUB_STEP_SUMMARY
+            cat rebase_failures.txt >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ✅ No rebase conflicts detected." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # Send Teams notification if conflicts detected
+      # - name: Notify Teams about conflicts
+      #   if: always() && env.TEAMS_WEBHOOK_URL && [ -s rebase_failures.txt ]
+      #   env:
+      #     TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+      #   run: |
+      #     conflicts=$(cat rebase_failures.txt | sed ':a;N;$!ba;s/\n/\\n/g')
+      #     payload='{
+      #       "@type": "MessageCard",
+      #       "@context": "https://schema.org/extensions",
+      #       "themeColor": "FF0000",
+      #       "summary": "Nightly Rebase Conflicts Detected",
+      #       "title": "🚨 Nightly Rebase Conflicts Detected",
+      #       "text": "'"$conflicts"'"
+      #     }'
+      #     curl -H "Content-Type: application/json" \
+      #          -d "$payload" \
+      #          $TEAMS_WEBHOOK_URL
